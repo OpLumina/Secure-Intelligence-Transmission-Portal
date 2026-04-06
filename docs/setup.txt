@@ -1,20 +1,11 @@
-# Note: for uploading to Claude:
-# "config\nginx.conf", "config\torrc", "docs\setup.txt", "src\package.json",
-# "src\server.js", "views\admin.html", "views\admin.js", "web\index.html",
-# "web\uplink.js", "web\login.html", "web\login.js", "web\404.html",
-# "web\50x.html", "pgp\openpgp.min.js", ".dockerignore", "Dockerfile",
-# "tor.Dockerfile", "docker-entrypoint.sh", "create-user.js",
-# "docker-compose.yaml", ".env", "tree.txt"
+
 ==========================================
- DIRMAP UPLINK — SETUP & OPERATIONS GUIDE
- STIG-Hardened Tor Hidden Service
+ SETUP & OPERATIONS GUIDE
 ==========================================
 
 Last updated: 2026-02-25
 Architecture: Tor -> Nginx -> Node.js (Express) -> Flat-file DB
 All commands are PowerShell unless noted otherwise.
-Run all commands from the project root unless told otherwise:
-  C:\Users\cmstu\Documents\Intelligence Collection\Web Apps for Intelligence\dirmap.onion.local
 
 WSL NOTE: All commands work in WSL. See Section 1 for path translation.
 All docker commands are identical in WSL — just replace backtick (`)
@@ -97,18 +88,6 @@ Verify GPG is available (after installing Gpg4win):
   Verify in WSL terminal:
     docker --version
     docker compose version
-
-  Path translation — your project at:
-    C:\Users\cmstu\Documents\Intelligence Collection\Web Apps for Intelligence\dirmap.onion.local
-  becomes in WSL:
-    /mnt/c/Users/cmstu/Documents/Intelligence\ Collection/Web\ Apps\ for\ Intelligence/dirmap.onion.local
-
-  Recommended: symlink for convenience:
-    ln -s "/mnt/c/Users/cmstu/Documents/Intelligence Collection/Web Apps for Intelligence/dirmap.onion.local" ~/dirmap
-    cd ~/dirmap
-
-  In WSL, replace PowerShell backtick (`) with backslash (\) for
-  line continuation. All other commands are identical.
 
   GPG in WSL (no Gpg4win needed):
     sudo apt install gnupg
@@ -1134,12 +1113,6 @@ If you get a 503:
   After the exec, PID 1 is tor (uid=100) with zero capabilities —
   no root process remains. Replaces the old inline shell command in
   tor.Dockerfile.
-
---- loginpwd.txt (NEW FILE) ---
-  Plaintext credential reference file for local development use only.
-  Gitignored. Stores test account credentials so you don't have to look
-  them up during setup. Do NOT commit this file or deploy it to any
-  server.
 
 --- web\login.html + web\login.js (MOVED to web/) ---
   login.html and login.js were previously loose in the project root.
