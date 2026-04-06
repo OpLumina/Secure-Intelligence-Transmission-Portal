@@ -30,7 +30,7 @@ or modification of the software performed by, for, or on behalf of a government 
 
 **morgan:** (MIT)
 
-**multer:** (MIT)**
+**multer:** (MIT)
 
 ---
 
