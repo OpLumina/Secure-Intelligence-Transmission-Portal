@@ -12,6 +12,15 @@ or modification of the software performed by, for, or on behalf of a government 
 
 ## Section 1: Third-Party Components
 **FOR OPENPGP.MIN.JS:** openpgp.min.js is LGPL licensed code, see more information at [https://openpgpjs.org/](https://openpgpjs.org/)
+**OTHER THIRD-PARTY DEPENDENCIES:** 
+**bcryptjs:** (MIT)
+**cookie-parser:** (MIT)
+**express: (MIT)**
+**express-rate-limit:** (MIT)
+**helmet:** (MIT)
+**jsonwebtoken:** (MIT)
+**morgan:** (MIT)
+**multer:** (MIT)**
 
 ---
 
