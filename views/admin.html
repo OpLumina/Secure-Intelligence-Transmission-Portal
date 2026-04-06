@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SECURE_ADMIN</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'none';">
+    <style>
+        :root {
+            --red:    #cc0000;
+            --bg:     #0a0a0a;
+            --panel:  #111;
+            --border: #2a2a2a;
+            --green:  #00aa00;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: var(--bg);
+            color: #eee;
+            font-family: 'Courier New', monospace;
+            padding: 30px 20px;
+            min-height: 100vh;
+        }
+
+        h1 { color: var(--red); border-bottom: 2px solid var(--red); padding-bottom: 10px; font-size: 1.1rem; }
+
+        .header-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+
+        #status-bar { font-size: 0.7rem; color: #555; margin-bottom: 14px; }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 280px 1fr;
+            gap: 16px;
+            height: calc(100vh - 120px);
+        }
+
+        /* ---- Left: report list ---- */
+        .list-panel {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .list-header {
+            padding: 10px 14px;
+            font-size: 0.65rem;
+            color: #555;
+            letter-spacing: 2px;
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            background: var(--panel);
+        }
+
+        .report-item {
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+            font-size: 0.75rem;
+            color: #888;
+            transition: background 0.1s;
+            word-break: break-all;
+        }
+        .report-item:hover { background: #181818; color: #ccc; }
+        .report-item.active { border-left: 3px solid var(--red); background: #161616; color: #eee; }
+        .report-item-meta { font-size: 0.65rem; color: #444; margin-top: 3px; }
+
+        /* ---- Right: view panel ---- */
+        .view-panel {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .view-panel-header {
+            padding: 12px 18px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.7rem;
+            color: var(--red);
+            letter-spacing: 2px;
+            position: sticky;
+            top: 0;
+            background: var(--panel);
+        }
+
+        .view-panel-body { padding: 18px; flex: 1; }
+
+        #welcome-msg { color: #444; font-size: 0.85rem; padding: 40px 0; text-align: center; }
+
+        #content-area { display: none; }
+
+        #meta-info { color: var(--red); font-size: 0.75rem; margin-bottom: 10px; letter-spacing: 1px; }
+
+        pre {
+            background: #000;
+            padding: 14px;
+            color: #00ff00;
+            white-space: pre-wrap;
+            word-break: break-word;
+            border: 1px solid #1a1a1a;
+            font-size: 0.78rem;
+            line-height: 1.5;
+            max-height: 40vh;
+            overflow-y: auto;
+        }
+
+        /* ---- Attachments ---- */
+        #attachments-section {
+            margin-top: 16px;
+            border-top: 1px solid var(--border);
+            padding-top: 14px;
+        }
+        #attachments-section h4 {
+            font-size: 0.65rem;
+            color: #555;
+            letter-spacing: 2px;
+            margin-bottom: 10px;
+        }
+        .attachment-entry {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: #0a0a0a;
+            border: 1px solid var(--border);
+            margin-bottom: 6px;
+            font-size: 0.75rem;
+        }
+        .attachment-name { color: #888; word-break: break-all; }
+        .attachment-size { color: #444; font-size: 0.65rem; margin-top: 2px; }
+        .download-btn {
+            background: transparent;
+            border: 1px solid #333;
+            color: #666;
+            padding: 4px 10px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.65rem;
+            letter-spacing: 1px;
+            white-space: nowrap;
+            margin-left: 10px;
+            flex-shrink: 0;
+        }
+        .download-btn:hover { border-color: var(--green); color: var(--green); }
+
+        /* ---- Controls ---- */
+        .controls {
+            margin-top: 16px;
+            border-top: 1px solid var(--border);
+            padding-top: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        textarea {
+            width: 100%;
+            background: #000;
+            border: 1px solid var(--border);
+            color: #fff;
+            padding: 10px;
+            font-family: inherit;
+            font-size: 0.8rem;
+            resize: vertical;
+        }
+
+        button {
+            background: transparent;
+            border: 1px solid var(--red);
+            color: var(--red);
+            padding: 8px 18px;
+            cursor: pointer;
+            font-family: inherit;
+            font-weight: bold;
+            font-size: 0.75rem;
+            letter-spacing: 1px;
+        }
+        button:hover { background: var(--red); color: white; }
+        button:disabled { border-color: #333; color: #333; cursor: not-allowed; }
+        button:disabled:hover { background: transparent; color: #333; }
+
+        .btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
+
+        .delete-btn { border-color: #333; color: #555; }
+        .delete-btn:hover { background: #500; border-color: #500; color: white; }
+
+        .logout-btn {
+            border-color: #333;
+            color: #666;
+            font-size: 0.7rem;
+            padding: 5px 12px;
+        }
+        .logout-btn:hover { background: #222; color: #ccc; }
+    </style>
+</head>
+<body>
+
+<div class="header-bar">
+    <h1>// INTEL ENCLAVE — ADMIN TERMINAL</h1>
+    <button class="logout-btn" id="logoutBtn">TERMINATE_SESSION</button>
+</div>
+<div id="status-bar"></div>
+
+<div class="grid">
+
+    <!-- ── Left: Report List ──────────────────────────────────────────── -->
+    <div class="list-panel" id="reportList">
+        <div class="list-header">REPORT ARCHIVE</div>
+        <div style="padding:20px; color:#444;">SCANNING_DATABASE...</div>
+    </div>
+
+    <!-- ── Right: View Panel ─────────────────────────────────────────── -->
+    <div class="view-panel">
+        <div class="view-panel-header" id="view-panel-title">// SELECT REPORT</div>
+        <div class="view-panel-body">
+
+            <div id="welcome-msg">SELECT_REPORT_FOR_DECRYPTION</div>
+
+            <div id="content-area">
+                <div id="meta-info"></div>
+                <pre id="decrypted-text"></pre>
+
+                <!-- File Attachments Section -->
+                <div id="attachments-section">
+                    <h4>// ENCRYPTED FILE ATTACHMENTS</h4>
+                    <div id="attachment-list">
+                        <div style="color:#444; font-size:0.75rem;">NO_ATTACHMENTS</div>
+                    </div>
+                </div>
+
+                <div class="controls">
+                    <label style="font-size:0.65rem; color:#555; letter-spacing:2px;">ANALYST NOTES (SESSION ONLY)</label>
+                    <textarea id="adminNotes" rows="4" placeholder="Enter notes for this session..."></textarea>
+                    <div class="btn-row">
+                        <button id="saveNotesBtn">COMMIT_NOTES</button>
+                        <button class="delete-btn" id="deleteBtn">PURGE_REPORT</button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+</div>
+
+<!--
+    SECURITY NOTE: openpgp.min.js is NOT loaded here.
+    All PGP decryption is performed server-side. The private key never
+    leaves the server. admin.js is served from an authenticated API route.
+-->
+<script src="/api/admin/ui.js"></script>
+</body>
+</html>

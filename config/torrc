@@ -1,0 +1,68 @@
+# =============================================================================
+# Tor Configuration — DIRMAP UPLINK Hidden Service
+# Mount: ./config/torrc -> /etc/tor/torrc :ro
+#
+# DataDirectory  -> /var/lib/tor/state        (tmpfs — ephemeral)
+# HiddenServiceDir -> /var/lib/tor/hidden_service  (bind mount — persisted)
+#
+# These two directories are siblings under /var/lib/tor. This is intentional.
+# See tor.Dockerfile for a full explanation of why they must NOT be nested
+# under a common tmpfs mount point.
+# =============================================================================
+
+# Ephemeral Tor state (circuit cache, PID, lock file).
+# This path is covered by the tmpfs declared in docker-compose.yaml.
+# It is recreated fresh on every container start — correct behavior.
+DataDirectory /var/lib/tor/state
+
+# Log to stdout only — Docker captures this via json-file logging driver.
+# SafeLogging scrubs IP addresses from all log output (no leakage).
+Log notice stdout
+SafeLogging 1
+
+# =============================================================================
+# STIG / Security Hardening
+# =============================================================================
+
+# This node is a hidden service only — never an exit relay.
+ExitRelay 0
+
+# STIG CAT I: Disable all listener ports not required for this mission.
+# SOCKS: disabled — no outbound Tor proxying from this container.
+# ControlPort: disabled — no external control plane access.
+SocksPort 0
+ControlPort 0
+
+# CookieAuthentication has no effect with ControlPort 0, but set
+# explicitly to 0 to suppress any implicit authentication surface.
+CookieAuthentication 0
+
+# =============================================================================
+# Hidden Service Configuration
+# =============================================================================
+
+# Persisted across container restarts via bind mount:
+#   ./db/tor_service -> /var/lib/tor/hidden_service
+# On first run with an empty bind-mount directory, Tor generates:
+#   hostname               (v3 .onion address — 56 chars + .onion)
+#   hs_ed25519_public_key
+#   hs_ed25519_secret_key
+# Back up hs_ed25519_secret_key immediately. Loss is permanent.
+HiddenServiceDir /var/lib/tor/hidden_service/
+
+# v3 is the default for Tor >= 0.3.5 and the only supported version
+# for new services. Explicitly set for auditability.
+HiddenServiceVersion 3
+
+# Forward .onion port 80 to the Nginx container at its fixed IP.
+# Tor cannot resolve Docker hostnames — a static IP is required.
+# 172.30.0.10 is assigned to uplink-nginx in docker-compose.yaml via ipam.
+# Do not change this IP without updating docker-compose.yaml to match.
+# Forward .onion port 80 to the Nginx container at port 8080.
+# Iron Bank Nginx runs as non-root and listens on 8080 by default.
+HiddenServicePort 80 172.30.0.10:8080
+
+# Limit concurrent streams per circuit to reduce DoS exposure.
+# Closes the circuit immediately if the limit is exceeded.
+HiddenServiceMaxStreams 10
+HiddenServiceMaxStreamsCloseCircuit 1

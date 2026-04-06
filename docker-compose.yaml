@@ -1,0 +1,327 @@
+# =============================================================================
+# DIRMAP UPLINK — Docker Compose
+# Images:
+#   Node.js  : registry1.dso.mil/ironbank/opensource/nodejs/nodejs22:latest
+#   Nginx    : registry1.dso.mil/ironbank/opensource/nginx/nginx:1.29.4
+#   Tor      : alpine:3.21 (custom build via tor.Dockerfile)
+#
+# DEPLOYMENT MODES:
+#
+#   Full stack (with Tor):
+#     docker compose --profile tor up -d
+#
+#   Local testing only (NO Tor — port 8080 on loopback only):
+#     docker compose --profile local up -d
+#
+# Pull commands (run once before first build):
+#   docker pull registry1.dso.mil/ironbank/opensource/nodejs/nodejs22:latest
+#   docker pull registry1.dso.mil/ironbank/opensource/nginx/nginx:1.29.4
+#   docker pull alpine:3.21
+# =============================================================================
+
+networks:
+
+  # frontend: Nginx <-> Tor.
+  # Static /24 subnet so Tor can reach Nginx via a fixed IP in torrc.
+  frontend:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+  # backend: Nginx <-> Node only. No external routing.
+  backend:
+    internal: true
+    driver: bridge
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # BACKEND — Node.js 22 (Iron Bank)
+  # ---------------------------------------------------------------------------
+  uplink-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: local-uplink:latest
+    pull_policy: never
+    container_name: uplink-app
+    restart: always
+    read_only: true
+    user: "1001"  # STIG CAT II: never run as root (Iron Bank node = UID 1001)
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+          pids: 64        # STIG V-235955: prevent fork-bomb
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+    tmpfs:
+      - /run:rw,noexec,nosuid
+      - /app/tmp:rw,size=50M,noexec,nosuid
+      - /tmp:rw,noexec,nosuid,size=10M
+
+    volumes:
+      - ./db:/app/db:rw
+      - ./views:/app/views:ro
+      - ./pgp/priv:/app/pgp/priv:ro
+      - ./pgp/pub:/app/pgp/pub:ro
+      - ./logs/node:/app/logs:rw
+
+    env_file:
+      - .env
+
+    environment:
+      - PGP_KEY_PATH=/app/pgp/priv/dirtmap_private.asc
+      - PGP_PUB_KEY_PATH=/app/pgp/pub/dirtmap_public.asc
+
+    networks:
+      - backend
+
+    secrets:
+      - source: pgp_passphrase
+        target: pgp_passphrase
+      - source: jwt_secret
+        target: jwt_secret
+
+    cap_drop:
+      - ALL
+
+    security_opt:
+      - no-new-privileges:true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+        labels:    "service=uplink-app"
+
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))\""]
+      interval:    30s
+      timeout:     5s
+      retries:     3
+      start_period: 15s
+
+    profiles:
+      - local
+      - tor
+
+  # ---------------------------------------------------------------------------
+  # SHIELD — Nginx 1.29.4 (Iron Bank)
+  # Fixed IP 172.30.0.10 on the frontend network so torrc can reference it
+  # as a static address in HiddenServicePort (Tor requires an IP, not a hostname).
+  # ---------------------------------------------------------------------------
+  uplink-nginx:
+    image: registry1.dso.mil/ironbank/opensource/nginx/nginx:1.29.4
+    pull_policy: never
+    container_name: uplink-nginx
+    restart: always
+    read_only: true
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+          pids: 32        # STIG V-235955: prevent fork-bomb
+        reservations:
+          cpus: '0.10'
+          memory: 32M
+
+    tmpfs:
+      # uid=101 gid=101 — Iron Bank nginx runs as UID 101. Docker creates tmpfs as
+      # root:root on Windows/Docker Desktop regardless of mode flags, so we set
+      # uid/gid explicitly so the nginx user owns them from the start, bypassing
+      # the need for a chown in the entrypoint.
+      - /var/cache/nginx:rw,noexec,nosuid,uid=101,gid=101
+      - /run:rw,noexec,nosuid,uid=101,gid=101
+      - /var/cache/nginx/client_temp:rw,noexec,nosuid,uid=101,gid=101
+      - /var/cache/nginx/proxy_temp:rw,noexec,nosuid,uid=101,gid=101
+      - /var/cache/nginx/fastcgi_temp:rw,noexec,nosuid,uid=101,gid=101
+      - /var/cache/nginx/uwsgi_temp:rw,noexec,nosuid,uid=101,gid=101
+      - /var/cache/nginx/scgi_temp:rw,noexec,nosuid,uid=101,gid=101
+      - /var/run:rw,noexec,nosuid,uid=101,gid=101
+      - /tmp:rw,noexec,nosuid,size=10M,uid=101,gid=101
+      - /etc/nginx/conf.d:rw,noexec,nosuid,uid=101,gid=101
+
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./web:/usr/share/nginx/html:ro
+      - ./pgp/pub:/pgp/pub:ro
+      - ./pgp/openpgp.min.js:/app/pgp/openpgp.min.js:ro
+      - ./logs/nginx:/var/log/nginx:rw
+
+    # Bind to 127.0.0.1 ONLY — never expose to 0.0.0.0 on the host.
+    # Tor reaches Nginx via the internal Docker frontend network (172.30.0.0/24).
+    # The host reaches it at http://127.0.0.1:8080 for local testing only.
+    ports:
+      - "127.0.0.1:8080:8080"
+
+    depends_on:
+      uplink-app:
+        condition: service_healthy
+
+    networks:
+      frontend:
+        ipv4_address: 172.30.0.10
+        aliases:
+          - uplink-shield
+      backend:
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+
+    security_opt:
+      - no-new-privileges:true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+        labels:    "service=uplink-nginx"
+
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && echo -e 'GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && cat <&3 | grep '200 OK'"]
+      interval:    30s
+      timeout:     5s
+      retries:     3
+      start_period: 10s
+
+    profiles:
+      - local
+      - tor
+
+  # ---------------------------------------------------------------------------
+  # GATEWAY — Tor Hidden Service (Alpine 3.21, custom build)
+  # Only started with --profile tor. Excluded from --profile local.
+  #
+  # CAPABILITY DESIGN (startup only — all dropped after su-exec):
+  #
+  #   CAP_CHOWN      — entrypoint chowns root-owned tmpfs mounts to tor:tor.
+  #                    Docker always creates tmpfs as root:root regardless of
+  #                    mode= flags or the USER directive.
+  #
+  #   CAP_DAC_OVERRIDE — entrypoint must chown/chmod tmpfs mounts inside
+  #                    /var/lib/tor. Without DAC_OVERRIDE, root cannot modify
+  #                    directories/files it does not own after mount.
+  #
+  #   CAP_SETUID     — su-exec switches UID from 0 (root) to 100 (tor).
+  #   CAP_SETGID     — su-exec switches GID from 0 (root) to 101 (tor).
+  #
+  #   All four caps exist ONLY for the entrypoint's setup phase (~ms).
+  #   su-exec uses exec() — it replaces the process. Tor inherits zero
+  #   capabilities and runs as tor (uid=100, gid=101) for its entire lifetime.
+  #
+  #   no-new-privileges:false is required for su-exec to perform the
+  #   credential switch via execve. Once Tor is running, no further privilege
+  #   changes are possible — it has no caps and is not root.
+  #
+  # MOUNT LAYOUT:
+  #   tmpfs  /var/lib/tor/state    — ephemeral DataDirectory
+  #   tmpfs  /run                  — ephemeral runtime dir
+  #   tmpfs  /tmp                  — ephemeral scratch
+  #   volume tor_hidden_service -> /var/lib/tor/hidden_service  (persisted keys, named volume)
+  #   bind   ./logs/tor         -> /var/log/tor                 (persisted logs)
+  #   bind   ./config/torrc     -> /etc/tor/torrc               (read-only config)
+  # ---------------------------------------------------------------------------
+  uplink-tor:
+    build:
+      context: .
+      dockerfile: tor.Dockerfile
+    image: local-tor:latest
+    pull_policy: never
+    container_name: uplink-tor
+    restart: always
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+          pids: 32        # STIG V-235955: increased to accommodate Tor worker thread pool
+        reservations:
+          cpus: '0.05'
+          memory: 32M
+
+    tmpfs:
+      - /var/lib/tor/state:rw,noexec,nosuid
+      - /run:rw,noexec,nosuid
+      - /tmp:rw,noexec,nosuid,size=5M
+
+    volumes:
+      - ./config/torrc:/etc/tor/torrc:ro
+      - ./db/tor_service:/var/lib/tor/hidden_service:rw
+      - ./logs/tor:/var/log/tor:rw
+
+    depends_on:
+      uplink-nginx:
+        condition: service_healthy
+
+    networks:
+      frontend:
+        ipv4_address: 172.30.0.11
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    
+    security_opt:
+      - no-new-privileges:false
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+        labels:    "service=uplink-tor"
+
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /var/lib/tor/hidden_service/hostname || exit 1"]
+      interval:    60s
+      timeout:     5s
+      retries:     5
+      start_period: 60s
+
+    profiles:
+      - tor
+
+# =============================================================================
+# NAMED VOLUMES
+# =============================================================================
+# tor_hidden_service: persists onion keys across container restarts.
+# Named volumes live in Docker's WSL2 filesystem, bypassing NTFS permission
+# limitations that prevent chmod/chown on Windows bind mounts.
+#
+# BACKUP your onion keys:
+#   docker run --rm -v tor_hidden_service:/src -v ${PWD}:/dst alpine `
+#     tar czf /dst/tor_keys_backup.tar.gz -C /src .
+#
+# RESTORE:
+#   docker run --rm -v tor_hidden_service:/dst -v ${PWD}:/src alpine `
+#     tar xzf /src/tor_keys_backup.tar.gz -C /dst
+# =============================================================================
+# Named volume removed — tor_hidden_service replaced with bind mount ./db/tor_service
+
+# =============================================================================
+# DOCKER SECRETS
+# =============================================================================
+secrets:
+  pgp_passphrase:
+    file: ./secrets/pgp_passphrase.txt
+  jwt_secret:
+    file: ./secrets/jwt_secret.txt

@@ -1,0 +1,23 @@
+{
+  "name": "dirtmap-uplink",
+  "version": "2.1.0",
+  "description": "Hardened Intel Uplink Backend",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "multer": "^2.0.0",
+    "openpgp": "^6.3.0"
+  },
+  "scripts": {
+    "start": "node src/server.js"
+  }
+}

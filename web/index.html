@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Reporting Uplink</title>
+    <!--
+        CSP is enforced by Nginx. This meta tag provides fallback defence for
+        direct-to-port access and caching proxies.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; form-action 'self';">
+    <noscript>
+        <div style="color:red;padding:20px;text-align:center;font-family:monospace;">
+            CRITICAL: JAVASCRIPT IS REQUIRED FOR PGP ENCRYPTION AND SECURE UPLINK.
+        </div>
+    </noscript>
+    <style>
+        :root {
+            --primary-red:  #cc0000;
+            --bg-black:     #0a0a0a;
+            --panel-bg:     #111111;
+            --border-color: #2a2a2a;
+            --text-grey:    #666666;
+            --text-light:   #cccccc;
+            --accent:       #ff4d4d;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: var(--bg-black);
+            color: var(--text-light);
+            font-family: 'Courier New', Courier, monospace;
+            padding: 30px 20px 60px;
+            min-height: 100vh;
+        }
+
+        /* ---- Modal ---- */
+        #report-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.85);
+            z-index: 999;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            text-align: center;
+            padding: 40px;
+        }
+        #report-modal.visible { display: flex; }
+        #report-modal h2 { color: #fff; margin: 10px 0; font-size: 1.1rem; }
+        #report-num-display {
+            color: var(--primary-red);
+            font-size: 1.6rem;
+            font-weight: bold;
+            font-family: monospace;
+            letter-spacing: 2px;
+            margin: 14px 0 24px;
+            word-break: break-all;
+        }
+
+        /* ---- Dossier container ---- */
+        .dossier {
+            max-width: 860px;
+            margin: 0 auto;
+            border: 1px solid var(--border-color);
+            background: var(--panel-bg);
+        }
+
+        .header {
+            background: var(--primary-red);
+            padding: 14px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 { color: #fff; font-size: 1rem; letter-spacing: 1px; }
+        .header-meta { color: rgba(255,255,255,0.7); font-size: 0.7rem; }
+
+        /* Encryption status badge */
+        #enc-status {
+            display: inline-block;
+            background: #300;
+            color: #f00;
+            border: 1px solid #600;
+            padding: 4px 12px;
+            font-size: 0.7rem;
+            letter-spacing: 1px;
+        }
+        #enc-status.ready { background: #030; color: #0f0; border-color: #060; }
+
+        /* ---- Section chrome ---- */
+        .section-header {
+            color: var(--primary-red);
+            font-size: 0.75rem;
+            letter-spacing: 2px;
+            padding: 14px 20px 6px;
+            border-top: 1px solid var(--border-color);
+            border-bottom: 1px solid var(--border-color);
+            background: #0d0d0d;
+        }
+
+        .form-section {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+            gap: 16px;
+            padding: 20px;
+        }
+        .form-section.single-col { grid-template-columns: 1fr; }
+
+        .field { display: flex; flex-direction: column; gap: 6px; }
+        .field.full { grid-column: 1 / -1; }
+
+        label {
+            font-size: 0.7rem;
+            color: var(--text-grey);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+        label .required-mark { color: var(--accent); }
+
+        input[type="text"],
+        input[type="email"],
+        input[type="tel"],
+        select,
+        textarea {
+            background: #050505;
+            border: 1px solid var(--border-color);
+            color: var(--text-light);
+            padding: 10px 12px;
+            font-family: inherit;
+            font-size: 0.85rem;
+            width: 100%;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        input:focus, select:focus, textarea:focus {
+            border-color: var(--primary-red);
+        }
+        input.mandatory, textarea.mandatory {
+            border-left: 2px solid var(--primary-red);
+        }
+        select option { background: #111; }
+        textarea { resize: vertical; min-height: 120px; }
+
+        /* ---- Urgency selector ---- */
+        .urgency-row {
+            display: flex;
+            gap: 0;
+            border: 1px solid var(--border-color);
+        }
+        .urgency-row input[type="radio"] { display: none; }
+        .urgency-row label {
+            flex: 1;
+            text-align: center;
+            padding: 9px 4px;
+            cursor: pointer;
+            font-size: 0.7rem;
+            letter-spacing: 1px;
+            border-right: 1px solid var(--border-color);
+            transition: background 0.15s, color 0.15s;
+            color: var(--text-grey);
+        }
+        .urgency-row label:last-of-type { border-right: none; }
+        .urgency-row input[type="radio"]:checked + label {
+            background: var(--primary-red);
+            color: #fff;
+        }
+
+        /* ---- Dynamic subject entities ---- */
+        .dynamic-container { padding: 16px 20px; border-top: 1px solid var(--border-color); }
+        .dynamic-container > label {
+            display: block;
+            margin-bottom: 10px;
+            color: var(--text-grey);
+        }
+        .dynamic-item {
+            display: grid;
+            grid-template-columns: 160px 1fr 1fr auto;
+            gap: 8px;
+            margin-bottom: 8px;
+            align-items: start;
+        }
+        .remove-btn {
+            background: transparent;
+            border: 1px solid #333;
+            color: #666;
+            padding: 10px 12px;
+            cursor: pointer;
+            font-size: 1rem;
+            line-height: 1;
+        }
+        .remove-btn:hover { border-color: var(--primary-red); color: var(--primary-red); }
+        .add-btn {
+            background: transparent;
+            border: 1px dashed #333;
+            color: var(--text-grey);
+            padding: 8px 16px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.75rem;
+            letter-spacing: 1px;
+            margin-top: 6px;
+        }
+        .add-btn:hover { border-color: var(--primary-red); color: var(--primary-red); }
+
+        /* ---- Secure File Drop Zone ---- */
+        #file-drop-zone {
+            border: 2px dashed var(--border-color);
+            background: #050505;
+            padding: 30px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+            position: relative;
+        }
+        #file-drop-zone.drag-over {
+            border-color: var(--primary-red);
+            background: #180000;
+        }
+        #file-drop-zone.has-files {
+            border-style: solid;
+            border-color: #333;
+        }
+        #file-drop-zone input[type="file"] {
+            position: absolute;
+            inset: 0;
+            opacity: 0;
+            cursor: pointer;
+            width: 100%;
+            height: 100%;
+        }
+        #drop-prompt { pointer-events: none; }
+        #drop-prompt .drop-icon { font-size: 2rem; margin-bottom: 8px; color: var(--text-grey); }
+        #drop-prompt p { font-size: 0.75rem; color: var(--text-grey); line-height: 1.6; }
+        #drop-prompt .drop-note {
+            font-size: 0.65rem;
+            color: #444;
+            margin-top: 6px;
+        }
+
+        /* File list */
+        #file-list { padding: 0 20px 16px; display: none; }
+        #file-list.visible { display: block; }
+        #file-list h4 { font-size: 0.7rem; color: var(--text-grey); margin-bottom: 8px; letter-spacing: 1px; }
+        .file-entry {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: #0a0a0a;
+            border: 1px solid var(--border-color);
+            margin-bottom: 6px;
+            font-size: 0.75rem;
+        }
+        .file-entry-info { display: flex; flex-direction: column; gap: 2px; }
+        .file-entry-name { color: #aaa; }
+        .file-entry-meta { color: #444; font-size: 0.65rem; }
+        .file-entry-remove {
+            background: none;
+            border: none;
+            color: #444;
+            cursor: pointer;
+            font-size: 0.85rem;
+            padding: 2px 6px;
+        }
+        .file-entry-remove:hover { color: var(--primary-red); }
+        .file-warn { color: #cc6600; font-size: 0.7rem; margin-top: 6px; }
+
+        /* Encryption notice */
+        .enc-notice {
+            background: #0a0a00;
+            border: 1px solid #333300;
+            color: #666600;
+            font-size: 0.65rem;
+            padding: 6px 12px;
+            letter-spacing: 0.5px;
+            margin: 0 20px 16px;
+        }
+
+        /* ---- Progress bar ---- */
+        #progress-bar-wrap {
+            display: none;
+            padding: 0 20px 16px;
+        }
+        #progress-bar-wrap.visible { display: block; }
+        #progress-label { font-size: 0.7rem; color: var(--text-grey); margin-bottom: 4px; }
+        #progress-bar {
+            width: 100%;
+            height: 4px;
+            background: #1a1a1a;
+            overflow: hidden;
+        }
+        #progress-fill {
+            height: 100%;
+            background: var(--primary-red);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        /* ---- Submit button ---- */
+        .submit-btn {
+            width: calc(100% - 40px);
+            margin: 0 20px 20px;
+            padding: 14px;
+            background: var(--primary-red);
+            border: none;
+            color: #fff;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.85rem;
+            font-weight: bold;
+            letter-spacing: 2px;
+            transition: background 0.15s;
+        }
+        .submit-btn:hover:not(:disabled) { background: #ff0000; }
+        .submit-btn:disabled {
+            background: #330000;
+            color: #660000;
+            cursor: not-allowed;
+        }
+
+        /* ---- Char counter ---- */
+        .char-counter {
+            font-size: 0.65rem;
+            color: #444;
+            text-align: right;
+            margin-top: 2px;
+        }
+        .char-counter.warn { color: #cc6600; }
+        .char-counter.over { color: #cc0000; }
+
+        /* ---- Responsive ---- */
+        @media (max-width: 600px) {
+            .dynamic-item { grid-template-columns: 1fr auto; }
+            .dynamic-item select,
+            .dynamic-item input:last-of-type { grid-column: 1 / -1; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ── Confirmation Modal ───────────────────────────────────────────────── -->
+<div id="report-modal" role="dialog" aria-modal="true" aria-label="Submission Confirmation">
+    <p style="color:var(--text-grey); font-size:0.8rem; letter-spacing:2px;">TRANSMISSION ACKNOWLEDGED</p>
+    <h2>Your Report Number Is:</h2>
+    <div id="report-num-display" aria-live="polite"></div>
+    <p style="color:var(--text-grey); font-size:0.75rem; margin-bottom:20px;">
+        Save this number. It is the only reference to your submission.
+    </p>
+    <button
+        id="modalAcknowledge"
+        style="background:var(--primary-red);border:none;color:#fff;padding:10px 28px;cursor:pointer;font-family:inherit;letter-spacing:2px;">
+        ACKNOWLEDGE
+    </button>
+</div>
+
+<!-- ── Main Dossier ─────────────────────────────────────────────────────── -->
+<div class="dossier" role="main">
+
+    <!-- Header -->
+    <div class="header">
+        <h1>// SECURE INTELLIGENCE REPORT UPLINK</h1>
+        <div class="header-meta">
+            <span id="enc-status">ENC: LOADING...</span>
+        </div>
+    </div>
+
+    <form id="pgpForm" novalidate>
+
+        <!-- ── 1. Contact Information ──────────────────────────────────── -->
+        <div class="section-header">// 01 — CONTACT INFORMATION <span style="color:#444;">(OPTIONAL — ALL FIELDS)</span></div>
+        <div class="form-section">
+            <div class="field">
+                <label for="name">Name / Alias</label>
+                <input type="text" id="name" name="name" placeholder="Leave blank for Anonymous" autocomplete="off" maxlength="128" spellcheck="false">
+            </div>
+            <div class="field">
+                <label for="phone">Direct Line (Phone)</label>
+                <input type="tel" id="phone" name="phone" placeholder="+00 000 0000" autocomplete="off" maxlength="32">
+            </div>
+            <div class="field">
+                <label for="email">Secure Email</label>
+                <input type="email" id="email" name="email" placeholder="example@example.com" autocomplete="off" maxlength="254">
+            </div>
+            <div class="field">
+                <label for="other">Other Contact</label>
+                <input type="text" id="other" name="other" placeholder="Signal / Telegram / Other" autocomplete="off" maxlength="256">
+            </div>
+        </div>
+
+        <!-- ── 2. Report Metadata ──────────────────────────────────────── -->
+        <div class="section-header">// 02 — REPORT METADATA</div>
+        <div class="form-section">
+            <div class="field">
+                <label for="category">Report Category <span class="required-mark">*</span></label>
+                <select id="category" name="category" required>
+                    <option value="" disabled selected>— SELECT CATEGORY —</option>
+                    <option value="HUMINT">HUMINT — Human Intelligence</option>
+                    <option value="OSINT">OSINT — Open Source Intelligence</option>
+                    <option value="SIGINT">SIGINT — Signals Intelligence</option>
+                    <option value="IMINT">IMINT — Imagery Intelligence</option>
+                    <option value="CYBER">CYBER — Cyber / Technical</option>
+                    <option value="FININT">FININT — Financial Intelligence</option>
+                    <option value="INCIDENT">INCIDENT — Security Incident</option>
+                    <option value="THREAT">THREAT — Threat Report</option>
+                    <option value="OTHER">OTHER — Miscellaneous</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="country">Country of Report <span class="required-mark">*</span></label>
+                <input type="text" id="country" name="country" placeholder="Target Nation" required maxlength="64" autocomplete="off">
+            </div>
+            <div class="field">
+                <label for="city">City / Locality <span class="required-mark">*</span></label>
+                <input type="text" id="city" name="city" placeholder="Specific Locality" required maxlength="64" autocomplete="off">
+            </div>
+            <div class="field">
+                <label for="subject">Subject / Title</label>
+                <input type="text" id="subject" name="subject" placeholder="General Heading" maxlength="256" autocomplete="off">
+            </div>
+            <div class="field">
+                <label for="prev_report">Previous Report Ref.</label>
+                <input type="text" id="prev_report" name="prev_report" placeholder="REP-XXXXXXXXX" maxlength="64" autocomplete="off"
+                    pattern="^(REP-[A-Z0-9]+)?$" title="Format: REP-XXXXXXXXX or leave blank">
+            </div>
+        </div>
+
+        <!-- ── 3. Urgency ─────────────────────────────────────────────── -->
+        <div class="section-header">// 03 — URGENCY CLASSIFICATION</div>
+        <div style="padding: 16px 20px;">
+            <div class="urgency-row" role="group" aria-label="Urgency level">
+                <input type="radio" name="urgency" id="urg-routine" value="ROUTINE" checked>
+                <label for="urg-routine">ROUTINE</label>
+                <input type="radio" name="urgency" id="urg-priority" value="PRIORITY">
+                <label for="urg-priority">PRIORITY</label>
+                <input type="radio" name="urgency" id="urg-immediate" value="IMMEDIATE">
+                <label for="urg-immediate">IMMEDIATE</label>
+                <input type="radio" name="urgency" id="urg-flash" value="FLASH">
+                <label for="urg-flash">FLASH</label>
+            </div>
+        </div>
+
+        <!-- ── 4. Intel Body ──────────────────────────────────────────── -->
+        <div class="section-header">// 04 — INTELLIGENCE REPORT BODY</div>
+        <div class="form-section single-col">
+            <div class="field full">
+                <label for="intel">Primary Intel Briefing <span class="required-mark">*</span></label>
+                <textarea id="intel" name="intel" class="mandatory"
+                    placeholder="Provide full narrative intelligence report. Include: who, what, where, when, how, and significance." required
+                    maxlength="20000" rows="10" aria-describedby="intel-counter"></textarea>
+                <div class="char-counter" id="intel-counter">0 / 20,000</div>
+            </div>
+        </div>
+
+        <!-- ── 5. Source Reliability ──────────────────────────────────── -->
+        <div class="section-header">// 05 — SOURCE ASSESSMENT <span style="color:#444;">(OPTIONAL)</span></div>
+        <div class="form-section">
+            <div class="field">
+                <label for="src-reliability">Source Reliability</label>
+                <select id="src-reliability" name="src_reliability">
+                    <option value="">— SELECT —</option>
+                    <option value="A">A — Completely Reliable</option>
+                    <option value="B">B — Usually Reliable</option>
+                    <option value="C">C — Fairly Reliable</option>
+                    <option value="D">D — Not Usually Reliable</option>
+                    <option value="E">E — Unreliable</option>
+                    <option value="F">F — Reliability Unknown</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="src-credibility">Information Credibility</label>
+                <select id="src-credibility" name="src_credibility">
+                    <option value="">— SELECT —</option>
+                    <option value="1">1 — Confirmed by other sources</option>
+                    <option value="2">2 — Probably True</option>
+                    <option value="3">3 — Possibly True</option>
+                    <option value="4">4 — Doubtful</option>
+                    <option value="5">5 — Improbable</option>
+                    <option value="6">6 — Truth Cannot Be Judged</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- ── 6. Subject Entities ────────────────────────────────────── -->
+        <div class="section-header">// 06 — SUBJECT ENTITIES <span style="color:#444;">(OPTIONAL)</span></div>
+        <div class="dynamic-container">
+            <label>Agencies, Individuals, Addresses, Vehicles, or Assets</label>
+            <div id="dynamic-list" role="list"></div>
+            <button type="button" class="add-btn" id="addSubjectBtn">+ ADD SUBJECT ENTITY</button>
+        </div>
+
+        <!-- ── 7. Secure File Drop ────────────────────────────────────── -->
+        <div class="section-header">// 07 — SECURE FILE ATTACHMENTS <span style="color:#444;">(OPTIONAL — MAX 3 FILES, 10 MB EACH)</span></div>
+
+        <div style="padding: 16px 20px 0;">
+            <div id="file-drop-zone" role="button" aria-label="File drop zone">
+                <!--
+                    The input is inside the drop zone. A click on the zone triggers
+                    the file picker via JS. Drag-and-drop is also supported.
+                    Files are read in-browser only for display; actual binary content
+                    is sent encrypted via multipart upload.
+                -->
+                <input type="file" id="file-input" name="files[]" multiple accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.txt,.zip,.7z,.tar,.gz" tabindex="-1" aria-hidden="true">
+                <div id="drop-prompt">
+                    <div class="drop-icon" aria-hidden="true">⬆</div>
+                    <p>DROP FILES HERE or CLICK TO BROWSE</p>
+                    <p class="drop-note">Accepted: PDF, JPG, PNG, GIF, WEBP, TXT, ZIP, 7Z, TAR, GZ</p>
+                    <p class="drop-note">All attachments are encrypted before transmission using the server public key</p>
+                </div>
+            </div>
+        </div>
+
+        <div id="file-list" role="list" aria-live="polite"></div>
+
+        <div class="enc-notice" id="attach-enc-notice" style="display:none;">
+            ⚠ FILES AND TEXT ARE ENCRYPTED PRIOR TO TRANSMISION TO THE SERVER.
+        </div>
+
+        <!-- ── Progress ──────────────────────────────────────────────── -->
+        <div id="progress-bar-wrap">
+            <div id="progress-label">ENCRYPTING &amp; TRANSMITTING...</div>
+            <div id="progress-bar" role="progressbar" aria-label="Upload progress">
+                <div id="progress-fill"></div>
+            </div>
+        </div>
+
+        <!-- ── Submit ────────────────────────────────────────────────── -->
+        <button type="button" class="submit-btn" id="submitBtn" disabled>
+            ENCRYPTION MODULE LOADING...
+        </button>
+
+    </form>
+</div><!-- /.dossier -->
+
+<script src="/pgp/openpgp.min.js"></script>
+<script src="/uplink.js"></script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ACCESS_GATEWAY</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self';">
+    <style>
+        :root { --primary-red: #ff4d4d; --bg-black: #0a0a0a; }
+        body { background: var(--bg-black); color: white; font-family: monospace; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .login-card { border: 1px solid #333; padding: 40px; background: #111; box-shadow: 0 0 20px rgba(255, 0, 0, 0.1); width: 300px; }
+        h2 { border-bottom: 2px solid var(--primary-red); padding-bottom: 10px; font-size: 1.2rem; }
+        .field { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 5px; color: #888; font-size: 0.8rem; }
+        input { width: 100%; padding: 10px; background: #000; border: 1px solid #444; color: var(--primary-red); box-sizing: border-box; }
+        button { width: 100%; padding: 10px; background: var(--primary-red); border: none; color: white; cursor: pointer; font-weight: bold; }
+        button:hover { background: #cc0000; }
+        #status { margin-top: 15px; font-size: 0.7rem; color: var(--primary-red); }
+    </style>
+</head>
+<body>
+
+<div class="login-card">
+    <h2>// ACCESS GATEWAY</h2>
+    <!--
+        NOTE: This is a standard HTML form. Submission is intercepted by JS
+        and sent as JSON via fetch. The form action is intentionally left
+        empty — form-action 'self' in the CSP prevents any hijacked submission.
+    -->
+    <form id="loginForm">
+        <div class="field">
+            <label for="username">USERNAME</label>
+            <!--
+                FIX BUG-7: Changed autocomplete from "off" to "username".
+                autocomplete="off" is ignored by all modern browsers and pushes
+                users toward weaker passwords by defeating credential managers.
+                Using the correct semantic value lets password managers work,
+                which is the recommended NIST SP 800-63B / STIG best practice.
+            -->
+            <input type="text" id="username" name="username" required autocomplete="username" spellcheck="false">
+        </div>
+        <div class="field">
+            <label for="password">PASSWORD</label>
+            <input type="password" id="password" name="password" required autocomplete="current-password">
+        </div>
+        <button type="submit" id="authBtn">AUTHORIZE</button>
+    </form>
+    <div id="status" aria-live="polite"></div>
+</div>
+
+<script src="/login.js"></script>
+</body>
+</html>

@@ -1,0 +1,1172 @@
+# Note: for uploading to Claude:
+# "config\nginx.conf", "config\torrc", "docs\setup.txt", "src\package.json",
+# "src\server.js", "views\admin.html", "views\admin.js", "web\index.html",
+# "web\uplink.js", "web\login.html", "web\login.js", "web\404.html",
+# "web\50x.html", "pgp\openpgp.min.js", ".dockerignore", "Dockerfile",
+# "tor.Dockerfile", "docker-entrypoint.sh", "create-user.js",
+# "docker-compose.yaml", ".env", "tree.txt"
+==========================================
+ DIRMAP UPLINK — SETUP & OPERATIONS GUIDE
+ STIG-Hardened Tor Hidden Service
+==========================================
+
+Last updated: 2026-02-25
+Architecture: Tor -> Nginx -> Node.js (Express) -> Flat-file DB
+All commands are PowerShell unless noted otherwise.
+Run all commands from the project root unless told otherwise:
+  C:\Users\cmstu\Documents\Intelligence Collection\Web Apps for Intelligence\dirmap.onion.local
+
+WSL NOTE: All commands work in WSL. See Section 1 for path translation.
+All docker commands are identical in WSL — just replace backtick (`)
+line continuation with backslash (\).
+
+
+==========================================
+ TABLE OF CONTENTS
+==========================================
+
+  1.  Prerequisites
+  2.  File Tree Verification
+  3.  Directory Setup
+  4.  Secrets Setup (JWT + PGP Passphrase)
+  5.  PGP Key Generation
+  6.  NPM Dependency Installation
+  7.  User Database Initialization
+  8.  Volume Permission Fix (Windows/Docker Desktop)
+  9.  Static Error Pages
+  10. Local Testing (no Tor)
+  11. Tor Hidden Service Setup
+  12. Full Stack Deployment
+  13. Verifying the Onion Address
+  14. Connecting via Tor Browser
+  15. Admin Workflow
+  16. Log Monitoring
+  17. Rotating Secrets
+  18. Shutting Down
+  19. Troubleshooting
+  20. What's New (v2)
+  21. What's New (v2.1)
+
+
+==========================================
+ 1. PREREQUISITES
+==========================================
+
+Required on the host machine:
+
+  - Docker Desktop for Windows (includes Compose)
+  - Gpg4win  (for PGP key generation on Windows)
+    Download: https://www.gpg4win.org/
+  - Tor Browser  (for testing the .onion address)
+    Download: https://www.torproject.org/download/
+
+Node.js and npm are NOT required on the host.
+All Node operations run inside the Iron Bank container.
+
+Verify Docker is working:
+
+  docker --version
+  docker compose version
+
+Verify GPG is available (after installing Gpg4win):
+
+  gpg --version
+
+--- Iron Bank Registry Login (required before first pull) ---
+
+  Iron Bank images require authentication. Register free at:
+    https://registry1.dso.mil
+
+  Then login:
+
+  docker login registry1.dso.mil
+
+  Pull required images (run once):
+
+  docker pull registry1.dso.mil/ironbank/opensource/nodejs/nodejs22:latest
+  docker pull registry1.dso.mil/ironbank/opensource/nginx/nginx:1.29.4
+  docker pull alpine:3.21
+
+  Alpine pulls automatically but pre-pulling avoids delays on first build.
+
+--- WSL (Windows Subsystem for Linux) ---
+
+  Docker Desktop integrates with WSL automatically. Enable it at:
+    Docker Desktop -> Settings -> Resources -> WSL Integration
+
+  Verify in WSL terminal:
+    docker --version
+    docker compose version
+
+  Path translation — your project at:
+    C:\Users\cmstu\Documents\Intelligence Collection\Web Apps for Intelligence\dirmap.onion.local
+  becomes in WSL:
+    /mnt/c/Users/cmstu/Documents/Intelligence\ Collection/Web\ Apps\ for\ Intelligence/dirmap.onion.local
+
+  Recommended: symlink for convenience:
+    ln -s "/mnt/c/Users/cmstu/Documents/Intelligence Collection/Web Apps for Intelligence/dirmap.onion.local" ~/dirmap
+    cd ~/dirmap
+
+  In WSL, replace PowerShell backtick (`) with backslash (\) for
+  line continuation. All other commands are identical.
+
+  GPG in WSL (no Gpg4win needed):
+    sudo apt install gnupg
+    gpg --full-generate-key
+
+
+==========================================
+ 2. FILE TREE VERIFICATION
+==========================================
+
+Confirm your project contains these files before proceeding:
+
+  root folder
+  ├── .dockerignore              # Prevents node_modules/secrets from entering Docker build
+  ├── .env                       # Environment variables (JWT_SECRET, PGP_PASSPHRASE)
+  ├── .gitignore                 # Excludes DBs, logs, and private keys from Git
+  ├── create-user.js             # Administrative script for adding users to users.db
+  ├── docker-compose.yaml        # Orchestration for 'local' and 'tor' profiles
+  ├── docker-entrypoint.sh       # Tor container entrypoint: fixes tmpfs ownership, drops to tor uid
+  ├── Dockerfile                 # Hardened Node.js 22 (Iron Bank) build instructions
+  ├── loginpwd.txt               # Plaintext login credential reference (local use only, gitignored)
+  ├── tor.Dockerfile             # Custom Alpine-based Tor Hidden Service build
+  │
+  ├── config/                    # Infrastructure Configuration
+  │   ├── nginx.conf             # Hardened Nginx proxy (Shield)
+  │   └── torrc                  # Tor Hidden Service configuration
+  │
+  ├── src/                       # Backend Application Logic
+  │   ├── server.js              # Main Express.js app (STIG-hardened)
+  │   ├── package.json           # Node.js dependencies
+  │   ├── package-lock.json      # Dependency lockfile (generated by npm install)
+  │   └── src/                   # Artifact of volume mount — contains nested package-lock.json
+  │       └── package-lock.json
+  │
+  ├── views/                     # Authenticated Frontend (Admin)
+  │   ├── admin.html             # Admin Dashboard UI
+  │   └── admin.js               # Admin Dashboard Logic (served via auth route)
+  │
+  ├── web/                       # Public Frontend (Uplink)
+  │   ├── 404.html               # Custom Nginx 404 error page
+  │   ├── 50x.html               # Custom Nginx 5xx error page
+  │   ├── index.html             # Public submission landing page
+  │   ├── login.html             # Admin login page
+  │   ├── login.js               # Client-side login logic
+  │   └── uplink.js              # Client-side PGP encryption & submission logic
+  │
+  ├── db/                        # Persistent Data Store (Volume Mapped)
+  │   ├── users.db               # Bcrypt-hashed admin credentials
+  │   ├── reports/               # Encrypted intel reports (.asc)
+  │   │   └── attachments/       # Report-specific encrypted file attachments
+  │   └── tor_service/           # Tor identity (hostname, private_key)
+  │
+  ├── pgp/                       # Encryption Keys
+  │   ├── priv/                  # Server Private Key (for decryption)
+  │   │   └── dirtmap_private.asc
+  │   ├── pub/                   # Server Public Key (for public submissions)
+  │   │   └── dirtmap_public.asc
+  │   └── openpgp.min.js         # Client-side PGP library (served at /openpgp.min.js)
+  │
+  ├── secrets/                   # Docker Secret Mounts
+  │   ├── jwt_secret.txt         # Secure JWT signing key
+  │   └── pgp_passphrase.txt     # Passphrase for the private key
+  │
+  ├── logs/                      # Audit & System Logs
+  │   ├── nginx/                 # Nginx access/error logs
+  │   ├── node/                  # Express/Morgan application logs
+  │   └── tor/                   # Tor circuit/status logs
+  └── docs/                      # Documentation
+      └── setup.txt              # Project setup and STIG compliance notes
+
+
+==========================================
+ 3. DIRECTORY SETUP
+==========================================
+
+Create all required directories in one go:
+
+  New-Item -ItemType Directory -Force -Path `
+    "db\reports", `
+    "db\reports\attachments", `
+    "db\tor_service", `
+    "logs\nginx", `
+    "logs\node", `
+    "logs\tor", `
+    "pgp\priv", `
+    "pgp\pub", `
+    "secrets"
+
+Seed an empty users.db so the user creation script does not fail:
+
+  Set-Content -Path "db\users.db" -Value "{}"
+
+Verify the directories exist:
+
+  Get-ChildItem -Recurse -Directory | Select-Object FullName
+
+IMPORTANT: After creating directories on Windows, run the permission
+fix in Section 8 before starting the stack. Docker Desktop on Windows
+(NTFS volumes) does not honour Unix UID/GID ownership, so the Node
+container (UID 1000) cannot write to host-mounted directories without
+this fix.
+
+
+==========================================
+ 4. SECRETS SETUP
+==========================================
+
+Secrets are generated inside the Iron Bank Node container so you do
+not need openssl on your host.
+
+--- JWT Secret ---
+
+$jwtBytes = [byte[]]::new(64)
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($jwtBytes)
+[System.IO.File]::WriteAllText("$PWD\secrets\jwt_secret.txt", [Convert]::ToBase64String($jwtBytes))
+
+
+--- PGP Passphrase ---
+$pgpBytes = [byte[]]::new(36)
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($pgpBytes)
+[System.IO.File]::WriteAllText("$PWD\secrets\pgp_passphrase.txt", [Convert]::ToBase64String($pgpBytes))
+
+
+
+--- Verify both files were created ---
+
+  Get-Content secrets\jwt_secret.txt
+  Get-Content secrets\pgp_passphrase.txt
+
+  Both should print a long base64 string. If either is empty, rerun
+  the command above for that file.
+
+--- Lock down permissions ---
+
+  icacls "secrets" /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F"
+  icacls "secrets\jwt_secret.txt" /inheritance:r /grant:r "${env:USERNAME}:F"
+  icacls "secrets\pgp_passphrase.txt" /inheritance:r /grant:r "${env:USERNAME}:F"
+
+  !! BACK BOTH FILES UP OFFLINE NOW !!
+  If you lose pgp_passphrase.txt, all existing encrypted reports are
+  permanently unreadable. Store both files in an air-gapped password manager.
+
+
+==========================================
+ 5. PGP KEY GENERATION
+==========================================
+
+--- Delete existing keys (if regenerating) ---
+
+  List keys first:
+    gpg --list-secret-keys --keyid-format LONG
+    gpg --list-keys --keyid-format LONG
+
+  Delete by key ID (must delete secret key first):
+    gpg --delete-secret-key AAAA1111BBBB2222
+    gpg --delete-key AAAA1111BBBB2222
+
+  Nuclear option — wipe entire keyring (PowerShell):
+    Remove-Item -Recurse -Force "$env:APPDATA\gnupg"
+    gpg --list-keys   # regenerates fresh empty keyring
+
+  Nuclear option — wipe entire keyring (WSL/Linux):
+    rm -rf ~/.gnupg
+    gpg --list-keys   # regenerates fresh empty keyring
+
+---
+
+The server uses an RSA-4096 key pair. The public key is served to
+submitters for client-side encryption of the report JSON. The private
+key stays on the server and is NEVER sent to any browser. File
+attachments are encrypted server-side with the same public key.
+
+GPG must be installed (Gpg4win on Windows, gnupg on WSL/Linux).
+
+--- Read your passphrase so you can paste it when prompted ---
+
+  Get-Content secrets\pgp_passphrase.txt
+
+  Copy the output. You will paste it as the GPG key passphrase below.
+
+--- Generate the key pair ---
+
+  gpg --full-generate-key
+
+  When prompted:
+    Key type:    1  (RSA and RSA)
+    Key size:    4096
+    Expiration:  0  (no expiry)
+    Real name:   Uplink Enclave
+    Email:       (leave blank, press Enter)
+    Comment:     (leave blank, press Enter)
+    Passphrase:  PASTE contents of secrets\pgp_passphrase.txt exactly
+
+Note: if File Not found:
+  gpgconf --kill gpg-agent
+  gpgconf --launch gpg-agent
+  gpg --full-generate-key
+
+--- Find your key ID ---
+
+  gpg --list-secret-keys --keyid-format LONG
+
+  Output looks like:
+    sec   rsa4096/AAAA1111BBBB2222 2026-02-22 [SC]
+    uid   Uplink Enclave
+
+  Your key ID is the part after the slash: AAAA1111BBBB2222
+  Replace AAAA1111BBBB2222 with your actual key ID in the commands below.
+
+--- Export the public key ---
+
+  gpg --armor --export AAAA1111BBBB2222 | Out-File -Encoding ascii pgp\pub\dirtmap_public.asc
+
+--- Export the private key ---
+
+  gpg --armor --export-secret-keys AAAA1111BBBB2222 | Out-File -Encoding ascii pgp\priv\dirtmap_private.asc
+
+--- Verify both files ---
+
+  Get-Content pgp\pub\dirtmap_public.asc | Select-Object -First 1
+  # Should print: -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+  Get-Content pgp\priv\dirtmap_private.asc | Select-Object -First 1
+  # Should print: -----BEGIN PGP PRIVATE KEY BLOCK-----
+
+--- Lock down the private key ---
+
+  icacls "pgp\priv\dirtmap_private.asc" /inheritance:r /grant:r "${env:USERNAME}:F"
+
+
+==========================================
+ 6. NPM DEPENDENCY INSTALLATION
+==========================================
+
+npm is NOT required on your host. All installation runs inside the
+Iron Bank Node 22 container. The resulting node_modules folder is
+written to your src\ directory via the volume mount, then baked into
+the Docker image at build time.
+
+--- Install all dependencies ---
+
+  docker run --rm -it `
+    -v "${PWD}/src:/app" `
+    -w /app `
+    registry1.dso.mil/ironbank/opensource/nodejs/nodejs22:latest `
+    sh -c "npm install && npm audit fix --force && npm install --package-lock-only"
+
+  You may see: "npm warn Unknown global config python" — harmless,
+  can be ignored.
+
+  IMPORTANT: This also generates src\package-lock.json. The Docker
+  build uses "npm ci" which requires a valid lock file — running
+  "npm install" here first is mandatory before "docker compose build".
+  If you skip this step, the build will fail with a lock file mismatch.
+
+--- Verify all packages are present ---
+
+  Test-Path src\node_modules\multer              # True
+  Test-Path src\node_modules\express-rate-limit  # True
+  Test-Path src\node_modules\helmet              # True
+  Test-Path src\node_modules\openpgp             # True
+
+  !! Do not delete src\node_modules before running docker compose build !!
+  Rerun the install commands any time you change package.json.
+
+
+==========================================
+ 7. USER DATABASE INITIALIZATION
+==========================================
+
+Use create-user.js (included in the project root) to create admin
+accounts. It installs bcryptjs automatically if needed and enforces
+a minimum 20-character password.
+
+IMPORTANT: Must run as root (-u root) due to Windows/NTFS volume
+permission limitations. This is a one-time setup operation only.
+The running server container still enforces UID 1000 per STIG.
+
+  docker run --rm -it `
+    -u root `
+    -v "${PWD}:/app" `
+    -w /app `
+    registry1.dso.mil/ironbank/opensource/nodejs/nodejs22:latest `
+    node create-user.js
+
+  When prompted:
+    Username:  press Enter for default (admin), or type a username
+    Role:      press Enter for default (admin)
+    Password:  enter a strong password (minimum 20 characters)
+
+  !! USE A STRONG PASSWORD !!
+  Mixed case, numbers, and symbols. The account locks after 3 failed
+  attempts per IP, but password strength is your first line of defence.
+
+--- Verify the file was written ---
+
+  Get-Content db\users.db
+  # Expected:
+  # {
+  #   "admin": {
+  #     "hash": "$2a$12$...",
+  #     "role": "admin"
+  #   }
+  # }
+
+--- Lock down the file ---
+
+  icacls "db\users.db" /inheritance:r /grant:r "${env:USERNAME}:F"
+
+--- Adding more users later ---
+
+  Rerun the docker run command above (with -u root). The script
+  preserves existing users and adds the new one.
+  Do NOT edit users.db while the stack is running.
+
+
+==========================================
+ 8. VOLUME PERMISSION FIX (WINDOWS/DOCKER DESKTOP)
+==========================================
+
+Docker Desktop on Windows mounts host directories over NTFS which
+does not honour Unix UID/GID ownership. The Node container runs as
+UID 1000 (STIG requirement) and needs write access to db\reports\.
+
+Run this ONCE after initial directory setup, and again any time you
+recreate the db\ directory from scratch:
+
+  docker run --rm `
+    -u root `
+    -v "${PWD}/db:/app/db" `
+    registry1.dso.mil/ironbank/opensource/nodejs/nodejs22:latest `
+    chmod 777 /app/db/reports /app/db/reports/attachments
+
+NOTE: chmod 777 is required specifically because chown does not stick
+on NTFS-backed Docker volumes on Windows. On a native Linux host,
+chown -R 1000:1000 /app/db would be the correct approach instead.
+The 777 permission only applies inside the container's view of the
+volume — it does not change Windows file permissions on the host.
+
+This is a Windows/Docker Desktop limitation, not a design flaw.
+The container itself still runs as non-root UID 1000 per STIG.
+
+--- When to re-run this ---
+
+  - After initial directory setup (before first docker compose up)
+  - After recreating db\reports\ or db\reports\attachments\
+  - If you see: EACCES: permission denied, open '/app/db/reports/...'
+    in docker compose logs uplink-app
+
+
+==========================================
+ 9. STATIC ERROR PAGES
+==========================================
+
+web\404.html and web\50x.html are now included in the project and do
+not need to be created manually. Verify they exist:
+
+  Test-Path web\404.html    # True
+  Test-Path web\50x.html    # True
+
+If they are missing for any reason, recreate them:
+
+--- web\404.html ---
+
+  Set-Content -Path "web\404.html" -Value @"
+  <!DOCTYPE html>
+  <html><head><meta charset="UTF-8"><title>404</title></head>
+  <body style="background:#0a0a0a;color:#666;font-family:monospace;text-align:center;padding:80px;">
+  <h1 style="color:#cc0000;">404</h1><p>NOT_FOUND</p>
+  </body></html>
+  "@
+
+--- web\50x.html ---
+
+  Set-Content -Path "web\50x.html" -Value @"
+  <!DOCTYPE html>
+  <html><head><meta charset="UTF-8"><title>Error</title></head>
+  <body style="background:#0a0a0a;color:#666;font-family:monospace;text-align:center;padding:80px;">
+  <h1 style="color:#cc0000;">5XX</h1><p>UPLINK_ERROR</p>
+  </body></html>
+  "@
+
+
+==========================================
+ 10. LOCAL TESTING (NO TOR)
+==========================================
+
+Use the "local" profile to start only the Node and Nginx containers.
+Tor is excluded — the service is reachable at http://127.0.0.1:8080.
+
+--- Pre-flight checklist ---
+
+  Before first run, confirm all of these are done:
+  [ ] Secrets written (Section 4)
+  [ ] PGP keys generated and exported (Section 5)
+  [ ] npm install completed (Section 6) — generates package-lock.json
+  [ ] users.db created with -u root (Section 7)
+  [ ] Volume permissions fixed (Section 8)
+  [ ] .env has PGP_PUB_KEY_PATH set (verify below)
+
+  Get-Content .env | Select-String "PGP"
+  # Must show both:
+  #   PGP_KEY_PATH=/app/pgp/priv/dirtmap_private.asc
+  #   PGP_PUB_KEY_PATH=/app/pgp/pub/dirtmap_public.asc
+
+--- Build images ---
+
+  docker compose --profile local build
+
+--- Start local stack (no Tor) ---
+
+  docker compose --profile local up -d
+
+--- Verify health ---
+
+  docker compose ps
+  # Expected status for both: running (healthy)
+  #   uplink-app
+  #   uplink-nginx
+
+  docker compose --profile local logs -f   <- live logs, all containers
+  docker compose logs uplink-app           <- check for key/permission errors
+  docker compose logs uplink-nginx         <- check for config errors
+
+--- Access the service ---
+
+  Open in browser: http://127.0.0.1:8080
+  Admin login:     http://127.0.0.1:8080/login.html
+
+  On the submission page, the encryption badge should show:
+    ENC: READY ✓  (green)
+  If it shows ENC: LOADING... or ENC: OFFLINE, see Section 19.
+
+  !! SECURITY WARNING !!
+  Never use http://127.0.0.1:8080 for production admin access.
+  The auth cookie uses secure:false (required for HTTP-inside-Tor).
+  Port 8080 must never be exposed beyond localhost. In production,
+  admin access must ONLY occur via the .onion address.
+
+--- Stop local stack ---
+
+  docker compose --profile local down
+
+
+==========================================
+ 11. TOR HIDDEN SERVICE SETUP
+==========================================
+
+After Ensuring the Local Profile is Working and Configured Correctly, Fix any tor Permission erros:
+
+The torrc file must exist at config\torrc. If you don't have one yet,
+create it to EXACTLY match config\torrc already in the project.
+The template below reflects the correct production content:
+
+  Set-Content -Path "config\torrc" -Value @"
+  DataDirectory /var/lib/tor
+  Log notice stdout
+  SafeLogging 1
+  ExitRelay 0
+  SocksPort 0
+  ControlPort 0
+  CookieAuthentication 0
+  HiddenServiceDir /var/lib/tor/hidden_service/
+  HiddenServicePort 80 172.30.0.10:8080
+  HiddenServiceMaxStreams 10
+  HiddenServiceMaxStreamsCloseCircuit 1
+  "@
+
+  !! Do NOT use "Log notice file /var/log/tor/tor.log" !!
+  The Tor container runs read-only with a tmpfs at /var/lib/tor.
+  File-based logging will fail on the read-only rootfs.
+  Log to stdout so docker compose logs captures output correctly.
+
+The IP 172.30.0.10 is the static frontend network address assigned to
+uplink-nginx in docker-compose.yaml. Do not change either value without
+updating both files.
+
+--- Permissions ---
+
+  The Tor container runs as a non-root user. The hidden_service volume
+  must be writable. Verify after first run:
+
+  docker compose logs uplink-tor | Select-String "error|warn|permission"
+
+  If you see permission errors (note this will remove your keys and change onion address):
+    docker compose --profile tor down
+    Remove-Item -Recurse -Force db\tor_service\*
+    docker compose --profile tor up -d
+
+
+==========================================
+ 12. FULL STACK DEPLOYMENT (WITH TOR)
+==========================================
+
+--- Build images ---
+
+  docker compose build
+
+--- Start full stack ---
+.\fix-permissions.ps1
+docker compose --profile tor up -d --build
+
+  NOTE: You MUST specify --profile tor (or --profile local).
+  Running "docker compose up -d" with no profile starts nothing,
+  because all services in this project have explicit profiles assigned.
+
+--- Confirm Tor bootstrapped ---
+
+  docker compose logs uplink-tor | Select-String "Bootstrapped"
+  # Wait until you see: Bootstrapped 100% (done): Done
+
+--- Read your .onion address ---
+
+  Get-Content db\tor_service\hostname
+
+  Output looks like:
+    abcdef1234567890abcdef1234567890abcdef1234567890abcdef12.onion
+
+  Save this. It is the only way to reach your service over Tor.
+
+--- Verify all containers are running ---
+
+  docker compose ps
+
+  Expected status for all three: running (healthy)
+    uplink-app
+    uplink-nginx
+    uplink-tor
+
+  If any has exited:
+    docker compose logs uplink-app     <- secret/key/permission errors
+    docker compose logs uplink-nginx   <- config errors
+    docker compose logs uplink-tor     <- permission errors
+
+
+==========================================
+ 13. VERIFYING THE ONION ADDRESS
+==========================================
+
+  1. Open Tor Browser (not a regular browser)
+  2. Navigate to: http://[your-address].onion
+  3. The public submission page should load
+  4. The ENC: READY ✓ badge should appear in green
+  5. Navigate to: http://[your-address].onion/login.html
+  6. Log in as admin
+  7. Confirm the admin panel loads and lists reports correctly
+
+If the page does not load:
+  - Wait 2-3 more minutes (propagation can be slow on first run)
+  - docker compose logs uplink-tor | Select-String "Bootstrapped"
+  - docker compose logs uplink-nginx | Select-String "error"
+  - Get-Content db\tor_service\hostname  (must not be empty)
+
+If you get a 503:
+  - docker compose ps  (confirm uplink-app is running and healthy)
+  - docker compose logs uplink-app  (check for startup errors)
+
+
+==========================================
+ 14. CONNECTING VIA TOR BROWSER
+==========================================
+
+--- Security level ---
+
+  Shield icon -> Change Security Level -> Safest
+
+  Note: Safest disables JavaScript. The public submission page needs
+  JS for client-side PGP encryption. Submitters must allow JS for
+  your .onion specifically:
+    Shield icon -> Advanced Security Settings -> allow JS for this site
+
+  The login and admin pages also require JS. Admin access should
+  always be done from a machine you control with JS selectively
+  enabled for your .onion only.
+
+--- Never access admin over clearnet ---
+
+  /login.html and /admin must ONLY be accessed via the .onion address.
+  Never use http://127.0.0.1:8080 for admin access in production.
+  The httpOnly cookie has secure:false (required for HTTP-inside-Tor)
+  which means it would transmit over any clearnet HTTP connection.
+  Port 8080 must never be exposed beyond localhost.
+
+
+==========================================
+ 15. ADMIN WORKFLOW
+==========================================
+
+--- Viewing a report ---
+
+  1. Go to http://[your].onion/login.html
+  2. Log in. You are redirected to /admin automatically.
+  3. Left panel lists all reports (UUID filenames), newest first.
+  4. Click a report. The server decrypts it server-side using the
+     in-memory private key. You are never prompted for a passphrase.
+  5. Plaintext appears in the right panel (JSON pretty-printed).
+  6. Any file attachments appear below the report text with
+     "DECRYPT & DOWNLOAD" buttons.
+
+--- Downloading a file attachment ---
+
+  Click DECRYPT & DOWNLOAD next to the attachment. The server
+  decrypts the stored encrypted file and streams it to your browser.
+  The decrypted file is never written to disk — only the original
+  encrypted copy remains on the server.
+
+--- Deleting a report ---
+
+  Click PURGE_REPORT and confirm. The report file AND all associated
+  attachments are deleted, and the list refreshes automatically.
+
+--- Session timeout ---
+
+  Sessions expire after 10 minutes. You will be redirected to
+  /login.html automatically. Click TERMINATE_SESSION to log out
+  immediately and invalidate the token server-side.
+
+--- Brute force lockout ---
+
+  After 3 failed login attempts per IP+username combination, the
+  account is locked for 15 minutes. This is logged as:
+    [STIG_AUDIT] Lockout enforced: <ip>:<username>
+
+--- Adding a new user ---
+
+  docker compose --profile tor down   (or --profile local)
+
+  docker run --rm -it `
+    -u root `
+    -v "${PWD}:/app" `
+    -w /app `
+    registry1.dso.mil/ironbank/opensource/nodejs/nodejs22:latest `
+    node create-user.js
+.\fix-permissions.ps1
+  docker compose --profile tor up -d
+
+
+==========================================
+ 16. LOG MONITORING
+==========================================
+
+--- Live logs ---
+
+  All containers (recommended):
+    docker compose --profile local logs -f
+
+  Specific container:
+    docker compose logs -f uplink-app
+    docker compose logs -f uplink-nginx
+    docker compose logs -f uplink-tor
+
+  Last 50 lines then follow:
+    docker compose logs -f --tail=50
+
+--- Security events to watch for ---
+
+  In uplink-app logs:
+    [SECURITY_ALERT] Filesystem probe blocked        -> path traversal attempt
+    [SECURITY_ALERT] CSRF validation failed          -> CSRF / automation attack
+    [SECURITY_ALERT] Non-admin decrypt attempt       -> privilege escalation
+    [SECURITY_ALERT] Non-admin attachment access     -> privilege escalation
+    [SECURITY_ALERT] Path traversal attempt          -> directory traversal attempt
+    [STIG_AUDIT] Lockout enforced                    -> brute force in progress
+    [STIG_AUDIT] Failed login attempt                -> authentication failure
+    [CRITICAL] Failed to load User DB               -> users.db missing/corrupt
+    [CRITICAL] Submission error: EACCES             -> volume permission issue
+                                                       re-run Section 8 fix
+
+  In Nginx logs (logs\nginx\access.log):
+    HTTP 429  -> rate limiter firing (possible DoS or brute force)
+    HTTP 403  -> blocked path probe
+    HTTP 503  -> Node.js backend unreachable
+
+--- Read log files directly ---
+
+  Get-Content logs\nginx\access.log
+  Get-Content logs\nginx\error.log
+
+
+==========================================
+ 17. ROTATING SECRETS
+==========================================
+
+--- Rotate JWT secret ---
+
+  docker run --rm `
+    -v "${PWD}/secrets:/app/secrets" `
+    -w /app `
+    registry1.dso.mil/ironbank/opensource/nodejs/nodejs22:latest `
+    node -e "
+      const c = require('crypto');
+      const fs = require('fs');
+      fs.writeFileSync('/app/secrets/jwt_secret.txt', c.randomBytes(64).toString('base64'));
+      console.log('jwt_secret.txt rotated.');
+    "
+
+  docker compose restart uplink-app
+
+  All active sessions are immediately invalidated.
+
+--- Rotate PGP passphrase ---
+
+  You cannot change the passphrase without re-exporting the key.
+
+  1. Generate new passphrase:
+
+     docker run --rm `
+       -v "${PWD}/secrets:/app/secrets" `
+       -w /app `
+       registry1.dso.mil/ironbank/opensource/nodejs/nodejs22:latest `
+       node -e "
+         const c = require('crypto');
+         const fs = require('fs');
+         fs.writeFileSync('/app/secrets/pgp_passphrase.txt', c.randomBytes(36).toString('base64'));
+         console.log('pgp_passphrase.txt rotated.');
+       "
+
+  2. Change the passphrase on the key in your GPG keyring:
+
+     gpg --edit-key AAAA1111BBBB2222
+     > passwd
+     > save
+
+  3. Re-export the private key:
+
+     gpg --armor --export-secret-keys AAAA1111BBBB2222 | Out-File -Encoding ascii pgp\priv\dirtmap_private.asc
+
+  4. Rebuild and restart:
+
+     docker compose --profile tor up --build -d
+
+  Existing reports are still decryptable (the key pair itself has not
+  changed, only the passphrase protecting it).
+
+--- Rotate the entire PGP key pair ---
+
+  !! Existing reports encrypted to the old key will be unreadable !!
+  Decrypt and archive all reports via the admin panel first.
+
+  1. Decrypt and save all reports and attachments via the admin panel.
+  2. Follow section 5 to generate a new key pair.
+  3. Replace pgp\pub\dirtmap_public.asc and pgp\priv\dirtmap_private.asc.
+  4. Update secrets\pgp_passphrase.txt with the new passphrase.
+  5. docker compose --profile tor up --build -d
+  6. Notify submitters of the new public key fingerprint.
+
+--- Rotate the .onion address ---
+
+  !! This permanently changes your address !!
+
+  docker compose --profile tor down
+  Remove-Item -Recurse -Force db\tor_service\*
+  docker compose --profile tor up -d
+  Get-Content db\tor_service\hostname
+
+--- Change admin password ---
+
+  docker compose --profile local down  (or --profile tor)
+
+  docker run --rm -it `
+    -u root `
+    -v "${PWD}:/app" `
+    -w /app `
+    registry1.dso.mil/ironbank/opensource/nodejs/nodejs22:latest `
+    node create-user.js
+
+  docker compose --profile local up -d  (or --profile tor)
+
+
+==========================================
+ 18. SHUTTING DOWN
+==========================================
+
+--- Graceful stop (preserves all data) ---
+
+  docker compose --profile local down
+  docker compose --profile tor down
+
+--- Stop and remove containers and networks ---
+
+  docker compose down --remove-orphans
+
+--- Full wipe (DESTRUCTIVE) ---
+
+  docker compose down --remove-orphans
+  Remove-Item -Recurse -Force db\reports\*
+  Remove-Item -Recurse -Force logs\nginx\*
+  Remove-Item -Recurse -Force logs\node\*
+  Remove-Item -Recurse -Force logs\tor\*
+
+  !! Do NOT delete db\tor_service\ unless you intend to lose your
+  .onion address permanently !!
+
+--- Remove built images (forces fresh build next time) ---
+
+  docker rmi local-uplink:latest local-tor:latest
+
+
+==========================================
+ 19. TROUBLESHOOTING
+==========================================
+
+--- ENC: LOADING... on submission page ---
+
+  The public PGP key failed to load. Check:
+
+  1. File exists and has content:
+     Get-Content pgp\pub\dirtmap_public.asc | Select-Object -First 1
+     # Must print: -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+  2. Check browser DevTools console (F12) for the exact error.
+
+  3. Restart the stack so Nginx picks up the file:
+     docker compose --profile local down
+     docker compose --profile local up -d
+
+--- EACCES: permission denied (submission fails) ---
+
+  The Node container cannot write to the reports directory.
+  Run the volume permission fix from Section 8:
+
+  docker run --rm `
+    -u root `
+    -v "${PWD}/db:/app/db" `
+    registry1.dso.mil/ironbank/opensource/nodejs/nodejs22:latest `
+    chmod 777 /app/db/reports /app/db/reports/attachments
+
+  Then restart:
+    docker compose --profile local down
+    docker compose --profile local up -d
+
+--- Container uplink-app is unhealthy ---
+
+  The healthcheck is failing. Check logs:
+    docker compose logs uplink-app
+
+  Common causes:
+    - Missing PGP private key at pgp\priv\dirtmap_private.asc
+    - Missing or empty secrets\jwt_secret.txt
+    - Missing or empty secrets\pgp_passphrase.txt
+    - Wrong PGP passphrase (key decryption fails)
+    - node_modules missing or stale (re-run Section 6 npm install)
+    - package-lock.json empty or missing (re-run Section 6 npm install)
+
+--- docker compose build fails with npm ci error ---
+
+  npm ci requires a valid package-lock.json that matches package.json.
+  The lock file in the repo is a placeholder stub. You must run
+  "npm install" inside the container first (Section 6) to generate it:
+
+  docker run --rm -it `
+    -v "${PWD}/src:/app" `
+    -w /app `
+    registry1.dso.mil/ironbank/opensource/nodejs/nodejs22:latest `
+    npm install --omit=dev --ignore-scripts
+
+  Then rebuild:
+    docker compose build
+
+--- nginx: unknown directive "more_clear_headers" ---
+
+  The Iron Bank Nginx image does not include ngx_http_headers_more.
+  This directive must not be present in nginx.conf.
+  Ensure you are using the latest nginx.conf from this project.
+
+--- pids_limit conflict on docker compose up ---
+
+  Error: can't set distinct values on 'pids_limit' and
+  'deploy.resources.limits.pids'
+
+  Remove any top-level pids_limit fields from docker-compose.yaml.
+  PID limits must only appear under deploy.resources.limits.pids.
+  Ensure you are using the latest docker-compose.yaml from this project.
+
+--- CSRF_TOKEN_MISSING on submission ---
+
+  The CSRF cookie was not set. Refresh the page and try again.
+  Happens if you navigated directly to the form without a GET first.
+
+--- Login fails with ERROR: ACCOUNT_LOCKED ---
+
+  Too many failed attempts. Wait 15 minutes, or restart the stack
+  to clear the in-memory lockout map:
+    docker compose --profile local down
+    docker compose --profile local up -d
+
+--- ERROR: EACCES on create-user.js ---
+
+  Run create-user.js with -u root:
+
+  docker run --rm -it -u root `
+    -v "${PWD}:/app" -w /app `
+    registry1.dso.mil/ironbank/opensource/nodejs/nodejs22:latest `
+    node create-user.js
+
+--- Internal Filing Failure on report submission ---
+
+  Check logs for the specific error:
+    docker compose logs uplink-app
+
+  If EACCES: re-run the Section 8 volume permission fix.
+  If ENCRYPTION_KEY_UNAVAILABLE: PGP_PUB_KEY_PATH is missing from .env.
+  Verify .env contains:
+    PGP_PUB_KEY_PATH=/app/pgp/pub/dirtmap_public.asc
+
+--- "docker compose up -d" starts nothing ---
+
+  All services in this project use explicit profiles (local or tor).
+  Omitting --profile starts no containers. Always use:
+    docker compose --profile local up -d   (local testing)
+    docker compose --profile tor up -d     (full stack with Tor)
+
+
+==========================================
+ 20. WHAT'S NEW (v2)
+==========================================
+
+--- uplink.js (NEW FILE) ---
+  All client-side JavaScript extracted from index.html into a
+  separate web\uplink.js file. Required for CSP compliance —
+  Nginx enforces script-src 'self' which blocks inline scripts.
+  index.html now loads it as <script src="/uplink.js"></script>.
+  The inline onclick on the modal button was also removed and
+  replaced with addEventListener in uplink.js.
+
+--- Secure File Drop (index.html / uplink.js) ---
+  Submitters can now attach up to 3 files (max 10 MB each) to any
+  report. Supported: PDF, JPG, PNG, GIF, WEBP, TXT, ZIP, 7Z, TAR, GZ.
+
+  The encrypted report JSON is still encrypted client-side in the
+  browser before transmission.
+
+  File attachments are sent raw in the same multipart POST request and
+  are encrypted server-side using the same PGP public key before being
+  written to disk. Attachments are stored in:
+    db\reports\attachments\<report-uuid>\<filename>_<uuid>.asc
+
+  Admins can view, download (decrypt), and purge attachments from the
+  admin panel. Deleting a report also deletes all its attachments.
+
+--- Report Categories + Urgency ---
+  The submission form now includes:
+    - Report Category (HUMINT, OSINT, SIGINT, IMINT, CYBER, etc.)
+    - Urgency classification (ROUTINE / PRIORITY / IMMEDIATE / FLASH)
+    - Source reliability + credibility ratings (NATO admiralty format)
+
+--- CSRF Protection ---
+  All state-mutating API requests (POST, DELETE) now require a
+  synchronizer token. The server issues a readable cookie (csrf_token)
+  on each GET; JS reads it and includes it as the X-CSRF-Token header.
+  Requests that fail CSRF validation return HTTP 403.
+
+--- Per-Route Rate Limiting ---
+  express-rate-limit now enforces distinct limits at the Node layer
+  (in addition to Nginx):
+    - /api/login:        15 attempts per 15 minutes per IP
+    - /api/submit-intel: 5 submissions per minute per IP
+
+--- Docker Profiles ---
+  docker compose now supports deployment profiles:
+    --profile local   <- Nginx + Node only (no Tor) — for local testing
+    --profile tor     <- Full stack including Tor
+  NOTE: --profile is REQUIRED. Omitting it starts nothing, because all
+  services have explicit profiles. There is no default profile.
+
+--- Resource Limits & Healthchecks ---
+  All containers now have:
+    - CPU and memory limits (deploy.resources)
+    - PID limits under deploy.resources.limits.pids (not top-level
+      pids_limit — that caused a Compose conflict)
+    - Healthcheck using node -e for uplink-app (wget not available
+      in Iron Bank Node image)
+    - curl || wget fallback healthcheck for uplink-nginx
+    - Nginx depends_on with condition: service_healthy
+    - Tor depends_on uplink-nginx with condition: service_healthy
+
+--- Nginx Improvements ---
+  - more_clear_headers removed (module not in Iron Bank Nginx image)
+  - Permissions-Policy header added (disables geolocation, mic, camera)
+  - Distinct rate limit zones per location (login, submit, api, global)
+  - /api/login and /api/submit-intel have dedicated location blocks
+  - Health check endpoint (/health) returns JSON without backend proxy
+  - Cache-Control: no-store added to all sensitive routes
+
+--- server.js Improvements ---
+  - JWT algorithm explicitly pinned to HS256 (rejects alg:none attacks)
+  - JWT secret minimum length enforced at startup (32 bytes)
+  - Lockout window is time-bounded and self-pruning (no unbounded growth)
+  - Global error handler prevents stack traces from leaking to clients
+  - Path traversal guard on all file-reading endpoints
+  - PGP_PUB_KEY_PATH env var for server-side attachment encryption
+  - Prototype pollution guard on username field (login hardening)
+  - Constant-time dummy bcrypt compare prevents user enumeration timing
+  - users.db loaded with TTL cache — no per-request disk read
+  - Strict bcrypt hash schema validation — no raw string fallback
+
+--- create-user.js Improvements ---
+  - Password minimum 20-character enforcement restored (was commented out)
+  - Whitespace-only password rejection added
+
+--- .env ---
+  PGP_PUB_KEY_PATH added:
+    PGP_PUB_KEY_PATH=/app/pgp/pub/dirtmap_public.asc
+  Required for server-side attachment encryption. Missing this causes
+  Internal Filing Failure on report submission with attachments.
+
+--- package.json ---
+  Current dependencies:
+    multer             ^2.0.0         (multipart file upload handling)
+    express-rate-limit ^7.5.0         (per-route rate limiting)
+  Removed:
+    body-parser (redundant — express.json() subsumes it)
+
+==========================================
+ 21. WHAT'S NEW (v2.1)
+==========================================
+
+--- docker-entrypoint.sh (NEW FILE) ---
+  Custom entrypoint for the Tor container. Runs as root on startup to
+  fix ownership on tmpfs-backed directories (Docker always creates tmpfs
+  mounts as root:root regardless of mode flags or the USER directive),
+  then permanently drops privileges to the tor uid via su-exec.
+  After the exec, PID 1 is tor (uid=100) with zero capabilities —
+  no root process remains. Replaces the old inline shell command in
+  tor.Dockerfile.
+
+--- loginpwd.txt (NEW FILE) ---
+  Plaintext credential reference file for local development use only.
+  Gitignored. Stores test account credentials so you don't have to look
+  them up during setup. Do NOT commit this file or deploy it to any
+  server.
+
+--- web\login.html + web\login.js (MOVED to web/) ---
+  login.html and login.js were previously loose in the project root.
+  They now live in web\ alongside the other public-facing frontend
+  files, consistent with how Nginx serves static assets.
+
+--- web\404.html + web\50x.html (NEW FILES, moved to web/) ---
+  Custom Nginx error pages now ship with the project. No manual
+  creation step is needed (Section 9 updated accordingly). These were
+  previously created manually during setup.
+
+--- pgp\openpgp.min.js (MOVED to pgp/) ---
+  The OpenPGP.js client library is now stored in pgp\ alongside the
+  key files, rather than loose in the project root. Nginx serves it
+  at /openpgp.min.js via the volume mount. Update any local symlinks
+  or references if you had the old path hardcoded.
+
+--- src\package-lock.json (NOW TRACKED) ---
+  The lock file generated by npm install is now committed to the repo
+  at src\package-lock.json. The nested src\src\package-lock.json is
+  an artifact of the volume mount and can be ignored.
+
+--- package.json (v2.1.0) ---
+  Added dependencies:
+    cookie-parser      ^1.4.7         (cookie parsing middleware)
+    openpgp            ^6.3.0         (server-side PGP operations)
+
+==========================================
+ END OF SETUP GUIDE
+==========================================
