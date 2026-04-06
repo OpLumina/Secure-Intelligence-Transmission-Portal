@@ -12,7 +12,8 @@ or modification of the software performed by, for, or on behalf of a government 
 
 ## Section 1: Third-Party Components
 
-**FOR OPENPGP.MIN.JS:** openpgp.min.js is LGPL licensed code, see more information at [https://openpgpjs.org/](https://openpgpjs.org/)
+**FOR OPENPGP.MIN.JS:** This project utilizes the OpenPGP.js library (including openpgp.min.js and the openpgp npm package). 
+OpenPGP.js is licensed under the LGPL-3.0-or-later license. Consistent with LGPL requirements, this library is used as an external dependency. For more information, visit https://openpgpjs.org/.
 
 **OTHER THIRD-PARTY DEPENDENCIES:** 
 
