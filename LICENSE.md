@@ -23,7 +23,7 @@ use, modify, and distribute this software under the terms of this license, provi
 within 30 days of deployment, integration, or modification with the following regulations:
 1. Notification is only required once per Organization.
 2. Reason for usage is not required.
-3. The notifying entity must provide the name of the primary parent organization.
+3. The notifying entity must provide the name of the primary parent organization, see bullet below points for details on this
 * **Federal Level:** Must specify the Cabinet-level Department or Independent Agency (e.g., United States Department of Energy, not "USG" or "Grid Office" or "Executive Branch").
 * **State Level:** Must specify the State and the specific Department or Agency (e.g., California Department of Justice).
 * **Local Level:** Must specify the Municipality/County and the specific Office (e.g., Cook County Sheriff's Office or City of Seattle IT Department).
