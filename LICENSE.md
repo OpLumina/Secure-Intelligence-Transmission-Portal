@@ -118,4 +118,5 @@ This license shall be governed by and construed in accordance with United States
 
 ## Section 6: Licensing Questions
 **ANY QUESTIONS ABOUT LICENSING CAN BE DIRECTED TO cm.stupak@gmail.com
+
 Original Repository: https://github.com/OpLumina/Secure-Intelligence-Transmission-Portal**
