@@ -1,6 +1,4 @@
-I have updated the Markdown file to include the specific details for the State and Local levels under the **United States Government Use Provision**.
 
----
 
 **FOR ALL CODE WITHIN THIS PROJECT EXCEPT OPENPGP.MIN.JS:** LICENSE TERMS
 
